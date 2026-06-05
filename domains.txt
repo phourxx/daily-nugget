@@ -1,0 +1,15 @@
+# One domain per line. Blank lines and lines starting with '#' are ignored.
+# The agent rotates through these in order (round-robin), then picks a fresh,
+# non-obvious topic *within* that domain each day.
+#
+# Tip: list a domain twice to make it come up twice as often.
+# Reorder freely — order only sets the starting rotation, coverage stays even.
+
+System Design
+Databases
+Design Tradeoffs
+Distributed Systems
+Concurrency & Parallelism
+Performance & Scalability
+API & Interface Design
+Reliability & Failure Modes
