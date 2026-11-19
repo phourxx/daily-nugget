@@ -33,7 +33,7 @@ DEFAULT_DOMAINS = [
     "Reliability & Failure Modes",
 ]
 PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic").lower()
-ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5-5")
 # OpenAI's lineup changes often — set OPENAI_MODEL to a string you have access to
 # (e.g. gpt-5.5, gpt-5.2-chat-latest, gpt-4.1). The default below may be stale.
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2-chat-latest")
@@ -80,10 +80,17 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
 def anthropic_call(system: str, user: str) -> str:
     data = _post_json(
         "https://api.anthropic.com/v1/messages",
-        {"anthropic-version": "2023-06-01", "x-api-key": os.environ["ANTHROPIC_API_KEY"]},
+        {
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "server-side-fallback-2026-07-01",
+            "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+        },
         {
             "model": ANTHROPIC_MODEL,
-            "max_tokens": 1200,
+            # Opus 5.5 always thinks, and thinking tokens count toward max_tokens.
+            "max_tokens": 8000,
+            "output_config": {"effort": "low"},
+            "fallbacks": "default",
             "system": system,
             "messages": [{"role": "user", "content": user}],
         },
