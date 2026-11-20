@@ -8,16 +8,23 @@ resurface as recall questions.
 
 Required env vars (set as GitHub repo secrets):
   ANTHROPIC_API_KEY
-  RESEND_API_KEY
+  SMTP_HOST       e.g. smtp.gmail.com
+  SMTP_USER       login for the SMTP server (for Gmail, your address)
+  SMTP_PASSWORD   for Gmail, an app password, not your account password
   EMAIL_TO        e.g. you@example.com
-  EMAIL_FROM      e.g. "Daily SWE <onboarding@resend.dev>"  (resend.dev works with no domain)
+  EMAIL_FROM      e.g. "Daily SWE <you@gmail.com>"  (most servers require it to match SMTP_USER)
+Optional:
+  SMTP_PORT       default 587 (STARTTLS); 465 uses implicit TLS
 """
 
 import datetime as dt
 import json
 import os
+import smtplib
+import ssl
 import sys
 import urllib.request
+from email.message import EmailMessage
 
 LOG_FILE = "topics_log.json"
 DOMAINS_FILE = "domains.txt"   # one domain per line; '#' comments and blanks ignored
@@ -33,7 +40,7 @@ DEFAULT_DOMAINS = [
     "Reliability & Failure Modes",
 ]
 PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic").lower()
-ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5-5")
 # OpenAI's lineup changes often — set OPENAI_MODEL to a string you have access to
 # (e.g. gpt-5.5, gpt-5.2-chat-latest, gpt-4.1). The default below may be stale.
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2-chat-latest")
@@ -80,10 +87,17 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
 def anthropic_call(system: str, user: str) -> str:
     data = _post_json(
         "https://api.anthropic.com/v1/messages",
-        {"anthropic-version": "2023-06-01", "x-api-key": os.environ["ANTHROPIC_API_KEY"]},
+        {
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "server-side-fallback-2026-07-01",
+            "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+        },
         {
             "model": ANTHROPIC_MODEL,
-            "max_tokens": 1200,
+            # Opus 5.5 always thinks, and thinking tokens count toward max_tokens.
+            "max_tokens": 8000,
+            "output_config": {"effort": "low"},
+            "fallbacks": "default",
             "system": system,
             "messages": [{"role": "user", "content": user}],
         },
@@ -170,24 +184,24 @@ def render_email(topic: dict, domain: str, recall: dict | None) -> str:
 
 
 def send_email(html: str, subject: str) -> None:
-    body = json.dumps({
-        "from": os.environ["EMAIL_FROM"],
-        "to": [os.environ["EMAIL_TO"]],
-        "subject": subject,
-        "html": html,
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.resend.com/emails",
-        data=body,
-        headers={
-            "content-type": "application/json",
-            "authorization": f"Bearer {os.environ['RESEND_API_KEY']}",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        if resp.status not in (200, 201):
-            raise RuntimeError(f"Resend returned {resp.status}: {resp.read().decode()}")
+    msg = EmailMessage()
+    msg["From"] = os.environ["EMAIL_FROM"]
+    msg["To"] = os.environ["EMAIL_TO"]
+    msg["Subject"] = subject
+    msg.set_content(html, subtype="html")
+
+    host = os.environ["SMTP_HOST"]
+    port = int(os.environ.get("SMTP_PORT") or 587)
+    context = ssl.create_default_context()
+    if port == 465:
+        server = smtplib.SMTP_SSL(host, port, timeout=30, context=context)
+    else:
+        server = smtplib.SMTP(host, port, timeout=30)
+    with server:
+        if port != 465:
+            server.starttls(context=context)
+        server.login(os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"])
+        server.send_message(msg)
 
 
 def main() -> int:

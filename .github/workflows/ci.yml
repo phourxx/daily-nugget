@@ -1,0 +1,35 @@
+name: CI
+
+# Mainland pushes each flight to a mainland/flight-* branch and waits for
+# this check before it moves main.
+on:
+  push:
+    branches: ["mainland/flight-*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile
+        run: python -m py_compile send_topic.py
+      - name: Smoke test, no network
+        run: |
+          python - <<'PY'
+          import send_topic as s
+          domains = s.load_domains()
+          assert domains, "no domains"
+          assert s.pick_domain([], domains) == domains[0]
+          topic = {k: k for k in ("title", "concept", "why_it_matters", "failure_mode", "test_question")}
+          html = s.render_email(topic, domains[0], None)
+          assert "<h2" in html and domains[0] in html
+          print("ok:", len(domains), "domains")
+          PY
