@@ -18,11 +18,14 @@ Optional:
 """
 
 import datetime as dt
+import html
 import json
 import os
 import smtplib
 import ssl
 import sys
+import time
+import urllib.error
 import urllib.request
 from email.message import EmailMessage
 
@@ -47,6 +50,9 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2-chat-latest")
 RECENT_WINDOW = 30          # don't repeat a topic seen in the last N entries
 RECALL_AFTER_DAYS = 7       # a topic becomes eligible for recall once it's this old
 RECALL_EVERY = 3            # roughly: include a recall question every Nth day
+API_ATTEMPTS = 3            # tries per LLM request before giving up
+RETRY_STATUSES = {429, 500, 502, 503, 504, 529}
+TOPIC_KEYS = ("title", "concept", "why_it_matters", "failure_mode", "test_question")
 
 
 def load_log() -> list[dict]:
@@ -80,8 +86,17 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
         url, data=json.dumps(payload).encode(),
         headers={"content-type": "application/json", **headers}, method="POST",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.load(resp)
+    for attempt in range(1, API_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as e:
+            if e.code not in RETRY_STATUSES or attempt == API_ATTEMPTS:
+                raise
+            retry_after = e.headers.get("retry-after", "")
+            delay = int(retry_after) if retry_after.isdigit() else 5 * 2 ** (attempt - 1)
+            time.sleep(min(delay, 60))
+    raise AssertionError("unreachable")
 
 
 def anthropic_call(system: str, user: str) -> str:
@@ -162,10 +177,17 @@ def generate_topic(domain: str, recent_titles: list[str]) -> dict:
         '  "test_question": one question that checks real understanding\n'
     )
     raw = llm_call(system, user).removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    return json.loads(raw)
+    topic = json.loads(raw)
+    missing = [k for k in TOPIC_KEYS if not isinstance(topic.get(k), str) or not topic[k].strip()]
+    if missing:
+        raise ValueError(f"Model reply is missing {', '.join(missing)}: {raw[:200]!r}")
+    return topic
 
 
 def render_email(topic: dict, domain: str, recall: dict | None) -> str:
+    # Model output goes into HTML, so escape it: a "<" in a code example would break the email.
+    topic = {k: html.escape(topic[k]) for k in TOPIC_KEYS}
+    domain = html.escape(domain)
     parts = [
         f"<p style='margin:0;font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:#888'>{domain}</p>",
         f"<h2 style='margin:2px 0 4px'>{topic['title']}</h2>",
@@ -178,7 +200,7 @@ def render_email(topic: dict, domain: str, recall: dict | None) -> str:
         parts.append("<hr style='margin:20px 0;border:none;border-top:1px solid #ddd'>")
         parts.append(
             f"<p style='color:#555'><b>Recall ({recall['date']}):</b> "
-            f"{recall['title']} — {recall['test_question']}</p>"
+            f"{html.escape(recall['title'])} — {html.escape(recall['test_question'])}</p>"
         )
     return "<div style='font-family:system-ui,sans-serif;max-width:600px;line-height:1.5'>" + "".join(parts) + "</div>"
 
@@ -216,9 +238,9 @@ def main() -> int:
     if recall:
         recall["recalled_count"] = recall.get("recalled_count", 0) + 1
 
-    html = render_email(topic, domain, recall)
+    body = render_email(topic, domain, recall)
     subject = f"SWE · {domain} · {topic['title']}"
-    send_email(html, subject)
+    send_email(body, subject)
 
     log.append({
         "date": dt.date.today().isoformat(),
